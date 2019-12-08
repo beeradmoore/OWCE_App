@@ -16,7 +16,7 @@ namespace OWCE.DependencyInterfaces
         void StopScanning();
         Task<byte[]> ReadValue(string characteristicGuid, bool important = false);
         Task<byte[]> WriteValue(string characteristicGuid, byte[] data, bool important = false);
-        Task SubscribeValue(string characteristicGuid, bool important = false);
-        Task UnsubscribeValue(string characteristicGuid, bool important = false);
+        Task<bool> SubscribeValue(string characteristicGuid, bool important = false);
+        Task<bool> UnsubscribeValue(string characteristicGuid, bool important = false);
     }
 }

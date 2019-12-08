@@ -853,6 +853,7 @@ ReadRequestReceived - LifetimeOdometer
 
         private async Task<bool> Handshake()
         {
+            Debug.WriteLine("Handshake");
             _isHandshaking = true;
             _handshakeTaskCompletionSource = new TaskCompletionSource<byte[]>();
             _handshakeBuffer = new List<byte>();

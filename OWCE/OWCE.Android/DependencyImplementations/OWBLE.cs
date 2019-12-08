@@ -39,7 +39,7 @@ namespace OWCE.Droid.DependencyImplementations
             public OWBLE_QueueItem(BluetoothGattCharacteristic characteristic, OWBLE_QueueItemOperationType operationType)
             {
                 Characteristic = characteristic;
-                OperationType = OperationType;
+                OperationType = operationType;
             }
         }
 
@@ -137,18 +137,32 @@ namespace OWCE.Droid.DependencyImplementations
                 Debug.WriteLine("OnCharacteristicWrite: " + characteristic.Uuid);
                 _owble.OnCharacteristicWrite(gatt, characteristic, status);
             }
-
+            
             public override void OnCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic)
             {
                 Debug.WriteLine("OnCharacteristicChanged: " + characteristic.Uuid);
                 _owble.OnCharacteristicChanged(gatt, characteristic);
             }
+            
+            public override void OnDescriptorRead(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, GattStatus status)
+            {
+                Debug.WriteLine("OnDescriptorRead: " + descriptor.Uuid);
+                _owble.OnDescriptorRead(gatt, descriptor, status);
+            }
+
+            public override void OnDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, GattStatus status)
+            {
+                Debug.WriteLine("OnDescriptorWrite: " + descriptor.Uuid);
+                _owble.OnDescriptorWrite(gatt, descriptor, status);
+            }
+
         }
 
-
-        Dictionary<UUID, BluetoothGattCharacteristic> _characteristics = new Dictionary<UUID, BluetoothGattCharacteristic>();
-        Dictionary<UUID, TaskCompletionSource<byte[]>> _readQueue = new Dictionary<UUID, TaskCompletionSource<byte[]>>();
-        Dictionary<UUID, TaskCompletionSource<byte[]>> _writeQueue = new Dictionary<UUID, TaskCompletionSource<byte[]>>();
+        Dictionary<string, BluetoothGattCharacteristic> _characteristics = new Dictionary<string, BluetoothGattCharacteristic>();
+        Dictionary<string, TaskCompletionSource<byte[]>> _readQueue = new Dictionary<string, TaskCompletionSource<byte[]>>();
+        Dictionary<string, TaskCompletionSource<byte[]>> _writeQueue = new Dictionary<string, TaskCompletionSource<byte[]>>();
+        Dictionary<string, TaskCompletionSource<bool>> _subscribeQueue = new Dictionary<string, TaskCompletionSource<bool>>();
+        Dictionary<string, TaskCompletionSource<bool>> _unsubscribeQueue = new Dictionary<string, TaskCompletionSource<bool>>();
 
         private void OnServicesDiscovered(BluetoothGatt gatt, GattStatus status)
         {
@@ -162,7 +176,7 @@ namespace OWCE.Droid.DependencyImplementations
             
             foreach (var characteristic in service.Characteristics)
             {
-                _characteristics.Add(characteristic.Uuid, characteristic);
+                _characteristics.Add(characteristic.Uuid.ToString().ToUpper(), characteristic);
             }
 
             if (_connectTaskCompletionSource.Task.IsCanceled == false)
@@ -317,6 +331,14 @@ namespace OWCE.Droid.DependencyImplementations
 
             _gattOperationQueueProcessing = true;
 
+
+
+            BluetoothGattDescriptor descriptor;
+
+            // Via https://www.bluetooth.com/specifications/gatt/descriptors/
+            var clientCharacteristicConfiguration = UUID.FromString("00002902-0000-1000-8000-00805f9b34fb");
+
+
             var item = _gattOperationQueue.Dequeue();
             switch (item.OperationType)
             {
@@ -339,33 +361,50 @@ namespace OWCE.Droid.DependencyImplementations
                     bool didSubscribe = _bluetoothGatt.SetCharacteristicNotification(item.Characteristic, true);
                     if (didSubscribe == false)
                     {
-                        Debug.WriteLine($"ERROR: Unable to subscribe {item.Characteristic.Uuid}");
+                        Debug.WriteLine($"ERROR: Unable to subscribe (ER1) {item.Characteristic.Uuid}");
                     }
 
-                    /* This is also sometimes required (e.g. for heart rate monitors) to enable notifications/indications
-        // see: https://developer.bluetooth.org/gatt/descriptors/Pages/DescriptorViewer.aspx?u=org.bluetooth.descriptor.gatt.client_characteristic_configuration.xml
+                    descriptor = item.Characteristic.GetDescriptor(clientCharacteristicConfiguration);
+                    bool didSetSubscribeValue = descriptor.SetValue(BluetoothGattDescriptor.EnableNotificationValue.ToArray());
+                    if (didSetSubscribeValue == false)
+                    {
+                        Debug.WriteLine($"ERROR: Unable to subscribe (ER2) {item.Characteristic.Uuid}");
+                    }
 
-                    BluetoothGattDescriptor descriptor = ch.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"));
-        if(descriptor != null) {
-            byte[] val = enabled ? BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE : BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE;
-            descriptor.setValue(val);
-            mBluetoothGatt.writeDescriptor(descriptor);
-        }
-        */
+                    bool didWriteSubscribeDescriptor = _bluetoothGatt.WriteDescriptor(descriptor);
+                    if (didWriteSubscribeDescriptor == false)
+                    {
+                        Debug.WriteLine($"ERROR: Unable to subscribe (ER3) {item.Characteristic.Uuid}");
+                    }
+
                     break;
                 case OWBLE_QueueItemOperationType.Unsubscribe:
                     bool didUnsubscribe = _bluetoothGatt.SetCharacteristicNotification(item.Characteristic, false);
                     if (didUnsubscribe == false)
                     {
-                        Debug.WriteLine($"ERROR: Unable to unsubscribe {item.Characteristic.Uuid}");
+                        Debug.WriteLine($"ERROR: Unable to unsubscribe (ER1) {item.Characteristic.Uuid}");
                     }
+
+                    descriptor = item.Characteristic.GetDescriptor(clientCharacteristicConfiguration);
+                    bool didSetUnsubscribeValue = descriptor.SetValue(BluetoothGattDescriptor.DisableNotificationValue.ToArray());
+                    if (didSetUnsubscribeValue == false)
+                    {
+                        Debug.WriteLine($"ERROR: Unable to unsubscribe (ER2) {item.Characteristic.Uuid}");
+                    }
+
+                    bool didWriteUnsubscribeDescriptor = _bluetoothGatt.WriteDescriptor(descriptor);
+                    if (didWriteUnsubscribeDescriptor == false)
+                    {
+                        Debug.WriteLine($"ERROR: Unable to unsubscribe (ER3) {item.Characteristic.Uuid}");
+                    }
+
                     break;
             }
         }
 
         private void OnCharacteristicRead(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, GattStatus status)
         {
-            var uuid = characteristic.Uuid;
+            var uuid = characteristic.Uuid.ToString().ToUpper();
 
             if (_readQueue.ContainsKey(uuid))
             {
@@ -381,7 +420,7 @@ namespace OWCE.Droid.DependencyImplementations
 
         private void OnCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, GattStatus status)
         {
-            var uuid = characteristic.Uuid;
+            var uuid = characteristic.Uuid.ToString().ToUpper();
 
             if (_writeQueue.ContainsKey(uuid))
             {
@@ -392,6 +431,49 @@ namespace OWCE.Droid.DependencyImplementations
 
             _gattOperationQueueProcessing = false;
             ProcessQueue();
+        }
+
+        private void OnDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, GattStatus status)
+        {
+            var uuid = descriptor.Characteristic.Uuid.ToString().ToUpper();
+
+            if (status == GattStatus.Success)
+            {
+
+                if (_subscribeQueue.ContainsKey(uuid))
+                {
+                    var subscribeItem = _subscribeQueue[uuid];
+                    _subscribeQueue.Remove(uuid);
+                    subscribeItem.SetResult(true);
+                }
+
+                if (_unsubscribeQueue.ContainsKey(uuid))
+                {
+                    var unsubscribeItem = _unsubscribeQueue[uuid];
+                    _unsubscribeQueue.Remove(uuid);
+                    unsubscribeItem.SetResult(true);
+                }
+
+                _gattOperationQueueProcessing = false;
+                ProcessQueue();
+            }
+            else
+            {
+                Debug.WriteLine($"OnDescriptorWrite Error: {uuid} {status}");
+            }
+        }
+
+        private void OnDescriptorRead(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, GattStatus status)
+        {
+            if (status == GattStatus.Success)
+            {
+                _gattOperationQueueProcessing = false;
+                ProcessQueue();
+            }
+            else
+            {
+                Debug.WriteLine($"OnDescriptorRead Error: {status}");
+            }
         }
 
 
@@ -440,6 +522,7 @@ namespace OWCE.Droid.DependencyImplementations
 
             return Task.CompletedTask;
         }
+
         public async Task StartScanning(int timeout = 15)
         {
             if (_isScanning)
@@ -497,28 +580,27 @@ namespace OWCE.Droid.DependencyImplementations
 
             _isScanning = false;
         }
-
-
+        
         public Task<byte[]> ReadValue(string characteristicGuid, bool important = false)
         {
+            characteristicGuid = characteristicGuid.ToUpper();
+
             Debug.WriteLine($"ReadValue: {characteristicGuid}");
 
             if (_bluetoothGatt == null)
                 return null;
 
-            var uuid = UUID.FromString(characteristicGuid);
-
             // TODO: Check for connected devices?
-            if (_characteristics.ContainsKey(uuid) == false)
+            if (_characteristics.ContainsKey(characteristicGuid) == false)
             {
                 // TODO Error?
                 return null;
             }
 
             // Already awaiting it.
-            if (_readQueue.ContainsKey(uuid))
+            if (_readQueue.ContainsKey(characteristicGuid))
             {
-                return _readQueue[uuid].Task;
+                return _readQueue[characteristicGuid].Task;
             }
 
             var taskCompletionSource = new TaskCompletionSource<byte[]>();
@@ -526,14 +608,14 @@ namespace OWCE.Droid.DependencyImplementations
             if (important)
             {
                 // TODO: Put this at the start of the queue.
-                _readQueue.Add(uuid, taskCompletionSource);
+                _readQueue.Add(characteristicGuid, taskCompletionSource);
             }
             else
             {
-                _readQueue.Add(uuid, taskCompletionSource);
+                _readQueue.Add(characteristicGuid, taskCompletionSource);
             }
 
-            _gattOperationQueue.Enqueue(new OWBLE_QueueItem(_characteristics[uuid], OWBLE_QueueItemOperationType.Read));
+            _gattOperationQueue.Enqueue(new OWBLE_QueueItem(_characteristics[characteristicGuid], OWBLE_QueueItemOperationType.Read));
 
             ProcessQueue();
 
@@ -542,6 +624,8 @@ namespace OWCE.Droid.DependencyImplementations
 
         public Task<byte[]> WriteValue(string characteristicGuid, byte[] data, bool important = false)
         {
+            characteristicGuid = characteristicGuid.ToUpper();
+
             Debug.WriteLine($"WriteValue: {characteristicGuid}");
             if (_bluetoothGatt == null)
                 return null;
@@ -552,10 +636,8 @@ namespace OWCE.Droid.DependencyImplementations
                 return null;
             }
 
-            var uuid = UUID.FromString(characteristicGuid);
-
             // TODO: Check for connected devices?
-            if (_characteristics.ContainsKey(uuid) == false)
+            if (_characteristics.ContainsKey(characteristicGuid) == false)
             {
                 // TODO Error?
                 return null;
@@ -574,45 +656,52 @@ namespace OWCE.Droid.DependencyImplementations
             if (important)
             {
                 // TODO: Put this at the start of the queue.
-                _writeQueue.Add(uuid, taskCompletionSource);
+                _writeQueue.Add(characteristicGuid, taskCompletionSource);
             }
             else
             {
-                _writeQueue.Add(uuid, taskCompletionSource);
+                _writeQueue.Add(characteristicGuid, taskCompletionSource);
             }
 
 
-            _gattOperationQueue.Enqueue(new OWBLE_QueueItem(_characteristics[uuid], OWBLE_QueueItemOperationType.Write));
+            _gattOperationQueue.Enqueue(new OWBLE_QueueItem(_characteristics[characteristicGuid], OWBLE_QueueItemOperationType.Write));
 
             ProcessQueue();
 
             return taskCompletionSource.Task;
         }
 
-        public Task SubscribeValue(string characteristicGuid, bool important = false)
+        public Task<bool> SubscribeValue(string characteristicGuid, bool important = false)
         {
+            characteristicGuid = characteristicGuid.ToUpper();
+
             Debug.WriteLine($"SubscribeValue: {characteristicGuid}");
             if (_bluetoothGatt == null)
                 return null;
 
-            var uuid = UUID.FromString(characteristicGuid);
-
             // TODO: Check for connected devices?
-            if (_characteristics.ContainsKey(uuid) == false)
+            if (_characteristics.ContainsKey(characteristicGuid) == false)
             {
                 // TODO Error?
                 return null;
             }
 
+            if (_subscribeQueue.ContainsKey(characteristicGuid))
+            {
+                return _subscribeQueue[characteristicGuid].Task;
+            }
 
-            _gattOperationQueue.Enqueue(new OWBLE_QueueItem(_characteristics[uuid], OWBLE_QueueItemOperationType.Subscribe));
+            var taskCompletionSource = new TaskCompletionSource<bool>();
+            _subscribeQueue.Add(characteristicGuid, taskCompletionSource);
+
+            _gattOperationQueue.Enqueue(new OWBLE_QueueItem(_characteristics[characteristicGuid], OWBLE_QueueItemOperationType.Subscribe));
 
             ProcessQueue();
 
-            return Task.CompletedTask;
+            return taskCompletionSource.Task;
         }
 
-        public Task UnsubscribeValue(string characteristicGuid, bool important = false)
+        public Task<bool> UnsubscribeValue(string characteristicGuid, bool important = false)
         {
             Debug.WriteLine($"UnsubscribeValue: {characteristicGuid}");
             if (_bluetoothGatt == null)
@@ -621,17 +710,25 @@ namespace OWCE.Droid.DependencyImplementations
             var uuid = UUID.FromString(characteristicGuid);
 
             // TODO: Check for connected devices?
-            if (_characteristics.ContainsKey(uuid) == false)
+            if (_characteristics.ContainsKey(characteristicGuid) == false)
             {
                 // TODO Error?
                 return null;
             }
 
-            _gattOperationQueue.Enqueue(new OWBLE_QueueItem(_characteristics[uuid], OWBLE_QueueItemOperationType.Unsubscribe));
+            if (_unsubscribeQueue.ContainsKey(characteristicGuid))
+            {
+                return _unsubscribeQueue[characteristicGuid].Task;
+            }
 
+            var taskCompletionSource = new TaskCompletionSource<bool>();
+            _unsubscribeQueue.Add(characteristicGuid, taskCompletionSource);
+            
+            _gattOperationQueue.Enqueue(new OWBLE_QueueItem(_characteristics[characteristicGuid], OWBLE_QueueItemOperationType.Unsubscribe));
+            
             ProcessQueue();
 
-            return Task.CompletedTask;
+            return taskCompletionSource.Task;
         }
         #endregion
     }
